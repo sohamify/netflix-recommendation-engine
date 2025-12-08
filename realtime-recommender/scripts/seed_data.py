@@ -57,7 +57,7 @@ def seed_users():
     print(f"Seeded {len(users)} users and {len(profiles)} profiles")
 
 # ====================== SEED CONTENT ======================
-def seed_content():
+# def seed_content():
     genres = ["Action", "Comedy", "Drama", "Horror", "Sci-Fi", "Romance", "Thriller", "Documentary", "Animation"]
     maturity_ratings = ["G", "PG", "PG-13", "R", "TV-Y", "TV-14", "TV-MA"]
 
@@ -126,6 +126,6 @@ if __name__ == "__main__":
     import io
     print("🌱 Starting data seeding...")
     seed_users()
-    seed_content()
+    # seed_content()
     print("✅ Initial seeding complete!")
     print("Next: Run synthetic event producers -> producers/user_event_producer/producer.py")
