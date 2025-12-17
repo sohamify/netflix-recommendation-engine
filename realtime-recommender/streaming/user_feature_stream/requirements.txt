@@ -1,0 +1,5 @@
+pyspark==3.5.0
+delta-spark==3.0.0
+redis
+minio
+faust-cchardet  # if needed for encoding

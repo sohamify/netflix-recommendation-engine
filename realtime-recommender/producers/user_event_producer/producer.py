@@ -11,17 +11,17 @@ import os
 
 # Load static data
 engine = create_engine(os.getenv("POSTGRES_URI", "postgresql://postgres:postgres@localhost:5432/recommender"))
+# Load real data from Postgres
 users_df = pd.read_sql("SELECT user_id FROM users", engine)
 profiles_df = pd.read_sql("SELECT profile_id, user_id, type FROM profiles", engine)
 movies_df = pd.read_sql("SELECT movie_id FROM movie", engine)
-shows_df = pd.read_sql("SELECT tvshow_id FROM tvshow", engine)
-episodes_df = pd.read_sql("SELECT tvshow_episode_id, tvshow_id FROM tvshow_episode", engine)
+tvshows_df = pd.read_sql("SELECT tvshow_id FROM tvshow", engine)
 
-all_content_ids = (
-    movies_df["movie_id"].tolist() +
-    shows_df["tvshow_id"].tolist() +
-    episodes_df["tvshow_episode_id"].tolist()
-)
+# Combine all content IDs (movies + tv shows only)
+all_content_ids = pd.concat([
+    movies_df['movie_id'],
+    tvshows_df['tvshow_id']
+]).tolist()
 
 p = Producer({'bootstrap.servers': os.getenv('KAFKA_BROKERS', 'localhost:9092')})
 
