@@ -2,12 +2,14 @@
 import os
 import pandas as pd
 import numpy as np
+import json
+import uuid
 from faker import Faker
 from sqlalchemy import create_engine
 from minio import Minio
-from datetime import datetime, timedelta
+from datetime import datetime
 import random
-import uuid
+import io
 
 fake = Faker()
 
@@ -16,19 +18,16 @@ POSTGRES_URI = os.getenv("POSTGRES_URI", "postgresql://postgres:postgres@localho
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-BUCKET_NAME = "content"
+BUCKET_NAME = "data-lake"
 
 engine = create_engine(POSTGRES_URI)
 minio_client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
 
-# Ensure bucket exists
+# Ensure bucket
 if not minio_client.bucket_exists(BUCKET_NAME):
     minio_client.make_bucket(BUCKET_NAME)
 
 N_USERS = 10_000
-N_MOVIES = 5_000
-N_TVSHOWS = 1_000
-N_EPISODES_PER_SHOW = 50
 
 # ====================== SEED USERS & PROFILES ======================
 def seed_users():
@@ -40,14 +39,16 @@ def seed_users():
             "user_id": user_id,
             "name": fake.name(),
             "email": fake.email(),
-            "password_hash": fake.sha256(),  # fake password
+            "password_hash": fake.sha256(),  # Placeholder
             "country": fake.country_code(),
-            "subscription_plan": random.choice(["basic", "standard", "premium"])
+            "subscription_plan": random.choice(["basic", "standard", "premium"]),
         })
-        # Each user has 1-3 profiles
+        # 1-3 profiles per user
         n_profiles = random.randint(1, 3)
         for i in range(n_profiles):
+            profile_id = str(uuid.uuid4())
             profiles.append({
+                "profile_id": profile_id,
                 "profile_name": f"Profile {i+1}" if n_profiles > 1 else "Main",
                 "type": random.choice(["adult", "kids"]),
                 "user_id": user_id
@@ -56,76 +57,121 @@ def seed_users():
     pd.DataFrame(profiles).to_sql("profiles", engine, if_exists="replace", index=False)
     print(f"Seeded {len(users)} users and {len(profiles)} profiles")
 
-# ====================== SEED CONTENT ======================
-# def seed_content():
-    genres = ["Action", "Comedy", "Drama", "Horror", "Sci-Fi", "Romance", "Thriller", "Documentary", "Animation"]
-    maturity_ratings = ["G", "PG", "PG-13", "R", "TV-Y", "TV-14", "TV-MA"]
-
-    # Movies
+# ====================== SEED MOVIES (TMDB) ======================
+def seed_movies():
+    # Load raw CSVs (assume in data/raw/)
+    movies_df = pd.read_csv("data/raw/tmdb_5000_movies.csv")
+    credits_df = pd.read_csv("data/raw/tmdb_5000_credits.csv")
+    
+    # Merge on id/movie_id
+    merged = pd.merge(movies_df, credits_df, left_on='id', right_on='movie_id', how='inner')
+    
+    # Parse JSON cols
+    def parse_genres(genres_str):
+        if pd.isna(genres_str):
+            return ""
+        try:
+            genres_list = json.loads(genres_str)
+            return "|".join([g['name'] for g in genres_list])  # Pipe-separated
+        except:
+            return ""
+    
+    def parse_cast(cast_str):
+        if pd.isna(cast_str):
+            return ""
+        try:
+            cast_list = json.loads(cast_str)
+            return "|".join([c['name'] for c in cast_list[:5]])  # Top 5 actors
+        except:
+            return ""
+    
+    def parse_creator(crew_str):
+        if pd.isna(crew_str):
+            return ""
+        try:
+            crew_list = json.loads(crew_str)
+            director = next((c['name'] for c in crew_list if c['job'] == 'Director'), None)
+            return director or ""
+        except:
+            return ""
+    
+    merged['genres'] = merged['genres'].apply(parse_genres)
+    merged['cast'] = merged['cast'].apply(parse_cast)
+    merged['creator'] = merged['crew'].apply(parse_creator)
+    
+    # Map to schema
     movies = []
-    for _ in range(N_MOVIES):
-        movie_id = str(uuid.uuid4())
+    for _, row in merged.iterrows():
+        movie_id = str(uuid.uuid4())  # Our PK
+        released_year = pd.to_datetime(row['release_date']).year if pd.notna(row['release_date']) else np.nan
         movies.append({
             "movie_id": movie_id,
-            "title": fake.catch_phrase() + " " + fake.word().capitalize(),
-            "description": fake.paragraph(nb_sentences=3),
-            "genre": random.choice(genres),
-            "maturity_rating": random.choice(maturity_ratings),
-            "cast": ", ".join([fake.name() for _ in range(random.randint(3,8))]),
-            "creator": fake.name(),
-            "released_year": random.randint(1950, 2025),
-            "duration_min": random.randint(60, 180),
-            "rating": round(random.uniform(1.0, 10.0), 1)
+            "source_id": row['id'],  # Original TMDB ID
+            "title": row['title'],
+            "description": row['overview'] or "",
+            "genre": row['genres'],
+            "maturity_rating": "",  # No direct; infer later if needed
+            "cast": row['cast'],
+            "creator": row['creator'],
+            "released_year": released_year,
+            "duration_min": row['runtime'],
+            "rating": round(row['vote_average'], 1) if pd.notna(row['vote_average']) else None
         })
-    # TV Shows
-    tvshows = []
-    episodes = []
-    for _ in range(N_TVSHOWS):
-        show_id = str(uuid.uuid4())
-        tvshows.append({
-            "tvshow_id": show_id,
-            "title": fake.company() + " " + random.choice(["Chronicles", "Saga", "Files", "Stories", "Adventures"]),
-            "description": fake.paragraph(nb_sentences=5),
-            "genre": random.choice(genres),
-            "maturity_rating": random.choice(maturity_ratings[:-3]),  # Less extreme for shows
-            "cast": ", ".join([fake.name() for _ in range(random.randint(5,12))]),
-            "creator": fake.name(),
-            "number_of_seasons": random.randint(1, 12),
-            "rating": round(random.uniform(4.0, 9.8), 1)
-        })
-        # Episodes per show
-        for season in range(1, tvshows[-1]["number_of_seasons"] + 1):
-            n_eps = random.randint(6, 24)
-            for ep in range(1, n_eps + 1):
-                episodes.append({
-                    "tvshow_episode_id": str(uuid.uuid4()),
-                    "tvshow_id": show_id,
-                    "title": f"S{season:02d}E{ep:02d} - {fake.sentence(nb_words=4)}",
-                    "description": fake.paragraph(),
-                    "season_number": season,
-                    "episode_number": ep,
-                    "duration_min": random.randint(20, 70)
-                })
-
-    # Save to Postgres
+    
     pd.DataFrame(movies).to_sql("movie", engine, if_exists="replace", index=False)
-    pd.DataFrame(tvshows).to_sql("tvshow", engine, if_exists="replace", index=False)
-    pd.DataFrame(episodes).to_sql("tvshow_episode", engine, if_exists="replace", index=False)
+    
+    # Upload raw to MinIO
+    for file in ["tmdb_5000_movies.csv", "tmdb_5000_credits.csv"]:
+        with open(f"data/raw/{file}", 'rb') as f:
+            minio_client.put_object(BUCKET_NAME, f"raw/content/{file}", 
+                                    data=io.BytesIO(f.read()), length=os.path.getsize(f"data/raw/{file}"), 
+                                    content_type="text/csv")
+    
+    print(f"Seeded {len(movies)} movies from TMDB")
 
-    # Save raw CSVs to MinIO (data lake)
-    for name, df in [("movies.csv", pd.DataFrame(movies)),
-                     ("tvshows.csv", pd.DataFrame(tvshows)),
-                     ("episodes.csv", pd.DataFrame(episodes))]:
-        csv_bytes = df.to_csv(index=False).encode()
-        minio_client.put_object(BUCKET_NAME, f"raw/content/{name}", 
-                                data=io.BytesIO(csv_bytes), length=len(csv_bytes), content_type="text/csv")
-    print(f"Seeded {len(movies)} movies, {len(tvshows)} shows, {len(episodes)} episodes")
+# ====================== SEED TV SHOWS (IMDB) ======================
+def seed_tvshows():
+    tv_df = pd.read_csv("data/raw/imdb-tv-shows.csv")  # Assume cols: title,year,rating,votes,genre,actors,certificate,language,country,writer,description,runtime
+    
+    # Clean/map
+    tv_df['year'] = pd.to_numeric(tv_df['year'], errors='coerce')
+    tv_df['runtime'] = tv_df['runtime'].str.extract('(\d+)').astype(float)  # Extract mins from "XX min"
+    tv_df['genre'] = tv_df['genre'].str.split(', ')  # List for multi
+    tv_df['actors'] = tv_df['actors'].str.split(', ')  # Top few
+    
+    tvshows = []
+    for _, row in tv_df.iterrows():
+        tvshow_id = str(uuid.uuid4())
+        genres = "|".join(row['genre']) if isinstance(row['genre'], list) else row['genre']
+        cast = "|".join(row['actors'][:5]) if isinstance(row['actors'], list) else row['actors']
+        tvshows.append({
+            "tvshow_id": tvshow_id,
+            "source_id": row.get('title', '') + str(row['year']),  # Composite key
+            "title": row['title'],
+            "description": row['description'] or "",
+            "genre": genres,
+            "maturity_rating": row['certificate'] or "",
+            "cast": cast,
+            "creator": row['writer'] or "",
+            "number_of_seasons": random.randint(1, 10),  # Synthetic; datasets lack it
+            "rating": round(row['rating'], 1) if pd.notna(row['rating']) else None
+        })
+    
+    pd.DataFrame(tvshows).to_sql("tvshow", engine, if_exists="replace", index=False)
+    
+    # Upload raw
+    with open("data/raw/imdb-tv-shows.csv", 'rb') as f:
+        minio_client.put_object(BUCKET_NAME, "raw/content/imdb-tv-shows.csv", 
+                                data=io.BytesIO(f.read()), length=os.path.getsize("data/raw/imdb-tv-shows.csv"), 
+                                content_type="text/csv")
+    
+    print(f"Seeded {len(tvshows)} TV shows from IMDB")
 
 # ====================== MAIN ======================
 if __name__ == "__main__":
-    import io
-    print("🌱 Starting data seeding...")
+    print("🌱 Starting real-dataset seeding...")
     seed_users()
-    # seed_content()
-    print("✅ Initial seeding complete!")
-    print("Next: Run synthetic event producers -> producers/user_event_producer/producer.py")
+    seed_movies()
+    seed_tvshows()
+    print("✅ Seeding complete! Raw CSVs in MinIO bucket 'data-lake/raw/content/'")
+    print("Next: Update producer.py to use real content_ids → docker build & run")
