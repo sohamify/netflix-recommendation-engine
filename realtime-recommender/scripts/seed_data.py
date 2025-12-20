@@ -19,6 +19,9 @@ MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 BUCKET_NAME = "data-lake"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATASET_DIR = os.path.join(BASE_DIR, "realtime-recommender", "datasets")
+
 
 engine = create_engine(POSTGRES_URI)
 minio_client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
@@ -58,13 +61,23 @@ def seed_users():
     print(f"Seeded {len(users)} users and {len(profiles)} profiles")
 
 # ====================== SEED MOVIES (TMDB) ======================
+movies_path = os.path.join(DATASET_DIR, "tmdb_5000_movies.csv")
+credits_path = os.path.join(DATASET_DIR, "tmdb_5000_credits.csv")
+tv_path = os.path.join(DATASET_DIR, "imdb_tvshows.csv")
+
+
+
+
 def seed_movies():
     # Load raw CSVs (assume in data/raw/)
-    movies_df = pd.read_csv("data/raw/tmdb_5000_movies.csv")
-    credits_df = pd.read_csv("data/raw/tmdb_5000_credits.csv")
-    
+    #movies_df = pd.read_csv("data/raw/tmdb_5000_movies.csv")
+    #credits_df = pd.read_csv("data/raw/tmdb_5000_credits.csv")
+    movies_df = pd.read_csv(movies_path)
+    credits_df = pd.read_csv(credits_path)
     # Merge on id/movie_id
     merged = pd.merge(movies_df, credits_df, left_on='id', right_on='movie_id', how='inner')
+    merged.rename(columns={"title_x": "title"}, inplace=True)
+
     
     # Parse JSON cols
     def parse_genres(genres_str):
@@ -121,21 +134,33 @@ def seed_movies():
     pd.DataFrame(movies).to_sql("movie", engine, if_exists="replace", index=False)
     
     # Upload raw to MinIO
-    for file in ["tmdb_5000_movies.csv", "tmdb_5000_credits.csv"]:
-        with open(f"data/raw/{file}", 'rb') as f:
-            minio_client.put_object(BUCKET_NAME, f"raw/content/{file}", 
-                                    data=io.BytesIO(f.read()), length=os.path.getsize(f"data/raw/{file}"), 
-                                    content_type="text/csv")
+    
+    # ---- MinIO: upload TMDB movie datasets ----
+    movie_files = [
+        movies_path,
+        credits_path,
+    ]
+
+    for path in movie_files:
+        with open(path, "rb") as f:
+            minio_client.put_object(
+                BUCKET_NAME,
+                f"raw/content/movies/{os.path.basename(path)}",
+                data=f,
+                length=os.path.getsize(path),
+                content_type="text/csv"
+            )
+
     
     print(f"Seeded {len(movies)} movies from TMDB")
 
 # ====================== SEED TV SHOWS (IMDB) ======================
 def seed_tvshows():
-    tv_df = pd.read_csv("data/raw/imdb-tv-shows.csv")  # Assume cols: title,year,rating,votes,genre,actors,certificate,language,country,writer,description,runtime
-    
+    #tv_df = pd.read_csv("data/raw/imdb-tv-shows.csv")  # Assume cols: title,year,rating,votes,genre,actors,certificate,language,country,writer,description,runtime
+    tv_df = pd.read_csv(tv_path)
     # Clean/map
     tv_df['year'] = pd.to_numeric(tv_df['year'], errors='coerce')
-    tv_df['runtime'] = tv_df['runtime'].str.extract('(\d+)').astype(float)  # Extract mins from "XX min"
+    tv_df['runtime'] = tv_df['runtime'].str.extract(r'(\d+)').astype(float)  # Extract mins from "XX min"
     tv_df['genre'] = tv_df['genre'].str.split(', ')  # List for multi
     tv_df['actors'] = tv_df['actors'].str.split(', ')  # Top few
     
@@ -160,17 +185,23 @@ def seed_tvshows():
     pd.DataFrame(tvshows).to_sql("tvshow", engine, if_exists="replace", index=False)
     
     # Upload raw
-    with open("data/raw/imdb-tv-shows.csv", 'rb') as f:
-        minio_client.put_object(BUCKET_NAME, "raw/content/imdb-tv-shows.csv", 
-                                data=io.BytesIO(f.read()), length=os.path.getsize("data/raw/imdb-tv-shows.csv"), 
-                                content_type="text/csv")
+    # ---- MinIO: upload IMDB TV dataset ----
+    with open(tv_path, "rb") as f:
+        minio_client.put_object(
+            BUCKET_NAME,
+            "raw/content/tv/imdb_tv-shows.csv",
+            data=f,
+            length=os.path.getsize(tv_path),
+            content_type="text/csv"
+        )
+
     
     print(f"Seeded {len(tvshows)} TV shows from IMDB")
 
 # ====================== MAIN ======================
 if __name__ == "__main__":
     print("🌱 Starting real-dataset seeding...")
-    seed_users()
+    #seed_users()
     seed_movies()
     seed_tvshows()
     print("✅ Seeding complete! Raw CSVs in MinIO bucket 'data-lake/raw/content/'")
