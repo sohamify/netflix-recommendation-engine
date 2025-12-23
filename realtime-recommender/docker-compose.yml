@@ -52,3 +52,14 @@ services:
       - "6379:6379"
     volumes:
       - ./data/redis:/data
+  
+  app:
+    build: .
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    env_file:
+      - .env
+    command: python producers/user_event_producer/producer.py
+

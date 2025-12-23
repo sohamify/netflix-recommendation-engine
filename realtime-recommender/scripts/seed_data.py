@@ -155,35 +155,94 @@ def seed_movies():
     print(f"Seeded {len(movies)} movies from TMDB")
 
 # ====================== SEED TV SHOWS (IMDB) ======================
-def seed_tvshows():
-    #tv_df = pd.read_csv("data/raw/imdb-tv-shows.csv")  # Assume cols: title,year,rating,votes,genre,actors,certificate,language,country,writer,description,runtime
-    tv_df = pd.read_csv(tv_path)
-    # Clean/map
-    tv_df['year'] = pd.to_numeric(tv_df['year'], errors='coerce')
-    tv_df['runtime'] = tv_df['runtime'].str.extract(r'(\d+)').astype(float)  # Extract mins from "XX min"
-    tv_df['genre'] = tv_df['genre'].str.split(', ')  # List for multi
-    tv_df['actors'] = tv_df['actors'].str.split(', ')  # Top few
+# def seed_tvshows():
+#     #tv_df = pd.read_csv("data/raw/imdb-tv-shows.csv")  # Assume cols: title,year,rating,votes,genre,actors,certificate,language,country,writer,description,runtime
+#     tv_df = pd.read_csv(tv_path)
+#     # Clean/map
+#     YEAR_COL = next(
+#         (c for c in tv_df.columns if c.lower() in {"year", "release_year", "start_year"}), 
+#         None
+#     )
+
+#     if YEAR_COL:
+#         tv_df['year'] = pd.to_numeric(tv_df[YEAR_COL], errors='coerce')
+#     else:
+#         tv_df['year'] = None
+
+#         tv_df['runtime'] = tv_df['runtime'].str.extract(r'(\d+)').astype(float)  # Extract mins from "XX min"
+#         tv_df['genre'] = tv_df['genre'].str.split(', ')  # List for multi
+#         tv_df['actors'] = tv_df['actors'].str.split(', ')  # Top few
     
+#     tvshows = []
+#     for _, row in tv_df.iterrows():
+#         tvshow_id = str(uuid.uuid4())
+#         genres = "|".join(row['genre']) if isinstance(row['genre'], list) else row['genre']
+#         cast = "|".join(row['actors'][:5]) if isinstance(row['actors'], list) else row['actors']
+#         tvshows.append({
+#             "tvshow_id": tvshow_id,
+#             "source_id": row.get('title', '') + str(row['year']),  # Composite key
+#             "title": row['title'],
+#             "description": row['description'] or "",
+#             "genre": genres,
+#             "maturity_rating": row['certificate'] or "",
+#             "cast": cast,
+#             "creator": row['writer'] or "",
+#             "number_of_seasons": random.randint(1, 10),  # Synthetic; datasets lack it
+#             "rating": round(row['rating'], 1) if pd.notna(row['rating']) else None
+#         })
+    
+#     pd.DataFrame(tvshows).to_sql("tvshow", engine, if_exists="replace", index=False)
+
+def seed_tvshows():
+    tv_df = pd.read_csv(tv_path)
+
+    # Normalize columns
+    tv_df.rename(columns={
+        "Title": "title",
+        "About": "description",
+        "EpisodeDuration(in Minutes)": "runtime",
+        "Genres": "genre",
+        "Actors": "actors",
+        "Rating": "rating",
+        "Votes": "votes",
+        "Years": "year"
+    }, inplace=True)
+
+    # Type casting
+    tv_df['year'] = tv_df['year'].astype(str).str.extract(r'(\d{4})').astype(float)
+    tv_df['runtime'] = pd.to_numeric(tv_df['runtime'], errors='coerce')
+    tv_df['rating'] = pd.to_numeric(tv_df['rating'], errors='coerce')
+
     tvshows = []
     for _, row in tv_df.iterrows():
         tvshow_id = str(uuid.uuid4())
-        genres = "|".join(row['genre']) if isinstance(row['genre'], list) else row['genre']
-        cast = "|".join(row['actors'][:5]) if isinstance(row['actors'], list) else row['actors']
         tvshows.append({
             "tvshow_id": tvshow_id,
-            "source_id": row.get('title', '') + str(row['year']),  # Composite key
+            "source_id": f"{row['title']}_{row['year']}",
             "title": row['title'],
             "description": row['description'] or "",
-            "genre": genres,
-            "maturity_rating": row['certificate'] or "",
-            "cast": cast,
-            "creator": row['writer'] or "",
-            "number_of_seasons": random.randint(1, 10),  # Synthetic; datasets lack it
+            "genre": row['genre'].replace(", ", "|") if isinstance(row['genre'], str) else "",
+            "maturity_rating": "",
+            "cast": row['actors'].replace(", ", "|") if isinstance(row['actors'], str) else "",
+            "creator": "",
+            "number_of_seasons": random.randint(1, 10),
             "rating": round(row['rating'], 1) if pd.notna(row['rating']) else None
         })
-    
+
     pd.DataFrame(tvshows).to_sql("tvshow", engine, if_exists="replace", index=False)
-    
+
+    # Upload raw to MinIO
+    with open(tv_path, "rb") as f:
+        minio_client.put_object(
+            BUCKET_NAME,
+            "raw/content/tv/imdb_tvshows.csv",
+            data=f,
+            length=os.path.getsize(tv_path),
+            content_type="text/csv"
+        )
+
+    print(f"Seeded {len(tvshows)} TV shows from IMDB")
+
     # Upload raw
     # ---- MinIO: upload IMDB TV dataset ----
     with open(tv_path, "rb") as f:
@@ -201,7 +260,7 @@ def seed_tvshows():
 # ====================== MAIN ======================
 if __name__ == "__main__":
     print("🌱 Starting real-dataset seeding...")
-    #seed_users()
+    seed_users()
     seed_movies()
     seed_tvshows()
     print("✅ Seeding complete! Raw CSVs in MinIO bucket 'data-lake/raw/content/'")
