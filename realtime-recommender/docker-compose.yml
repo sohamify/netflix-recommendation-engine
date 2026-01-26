@@ -31,9 +31,31 @@ services:
       KAFKA_NUM_PARTITIONS: 3
     healthcheck:
       test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
-      interval: 30s
+      interval: 10s
       timeout: 10s
-      retries: 5
+      retries: 10
+    networks:
+      - app-network
+
+  # NEW: Topic initialization service
+  kafka-init:
+    image: confluentinc/cp-kafka:7.3.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ['/bin/sh', '-c']
+    command: |
+      "
+      echo 'Waiting for Kafka to be ready...'
+      sleep 10
+      
+      echo 'Creating topics...'
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic engagement_events --partitions 3 --replication-factor 1
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 --topic user_events --partitions 3 --replication-factor 1
+      
+      echo 'Topics created successfully:'
+      kafka-topics --list --bootstrap-server kafka:9092
+      "
     networks:
       - app-network
 
@@ -59,6 +81,11 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - app-network
 
@@ -87,7 +114,6 @@ services:
       - ./data/garage/meta:/var/lib/garage/meta
       - ./data/garage/data:/var/lib/garage/data
       - ./garage.toml:/etc/garage.toml:ro
-  # REMOVE the command line - the image already has the correct entrypoint
     networks:
       - app-network
 
@@ -98,8 +124,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:
@@ -110,11 +136,66 @@ services:
       REDIS_PORT: 6379
     command: >
       sh -c "
-        echo 'Waiting for services to be ready...' &&
-        sleep 30 &&
+        echo 'Waiting for all services to be ready...' &&
+        sleep 10 &&
         echo 'Starting producer...' &&
         python producers/user_event_producer/producer.py
       "
+    networks:
+      - app-network
+
+  spark:
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      garage:
+        condition: service_started
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      POSTGRES_URI: postgresql://postgres:postgres@postgres:5432/recommender
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      GARAGE_ENDPOINT: http://garage:3900
+      GARAGE_ACCESS_KEY: GK48bac80794ed37b1a39e86b7
+      GARAGE_SECRET_KEY: d692bda02d3183010c58070afccd415325f3608c2ec3c087fde645767984d698
+      PYSPARK_PYTHON: /usr/bin/python3
+      PYSPARK_DRIVER_PYTHON: /usr/bin/python3
+    volumes:
+      - ./tmp/checkpoints:/tmp/checkpoints
+      - ./tmp/ivy2:/tmp/ivy2
+      - ./tmp/spark-local:/tmp/spark-local
+      - ./tmp/raw-events-delta:/tmp/raw-events-delta
+    command:
+      - /bin/bash
+      - -c
+      - |
+        echo 'Waiting for services...'
+        sleep 20
+        echo 'Starting Spark job...'
+        /opt/spark/bin/spark-submit \
+          --master local[*] \
+          --name RealtimeUserFeatureStream \
+          --driver-memory 2g \
+          --executor-memory 2g \
+          --jars /opt/spark/jars/delta-spark_2.13-3.2.0.jar,/opt/spark/jars/delta-storage-3.2.0.jar,/opt/spark/jars/spark-sql-kafka-0-10_2.13-4.0.1.jar,/opt/spark/jars/kafka-clients-3.7.0.jar,/opt/spark/jars/spark-token-provider-kafka-0-10_2.13-4.0.1.jar,/opt/spark/jars/commons-pool2-2.12.0.jar \
+          --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
+          --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
+          --conf spark.hadoop.fs.s3a.endpoint=http://garage:3900 \
+          --conf spark.hadoop.fs.s3a.access.key=GK48bac80794ed37b1a39e86b7 \
+          --conf spark.hadoop.fs.s3a.secret.key=d692bda02d3183010c58070afccd415325f3608c2ec3c087fde645767984d698 \
+          --conf spark.hadoop.fs.s3a.path.style.access=true \
+          --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem \
+          --conf spark.hadoop.fs.s3a.connection.ssl.enabled=false \
+          --conf spark.pyspark.python=/usr/bin/python3 \
+          --conf spark.sql.shuffle.partitions=20 \
+          /app/job.py
     networks:
       - app-network
 

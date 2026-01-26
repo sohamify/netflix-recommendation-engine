@@ -1,0 +1,57 @@
+FROM apache/spark:4.0.1-scala2.13-java17-python3-ubuntu
+
+USER root
+
+RUN apt-get update && apt-get install -y wget curl --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1. Postgres JDBC driver
+RUN wget -O /opt/spark/jars/postgresql-42.7.4.jar \
+    https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
+
+# 2. Delta Lake 3.2.0 (compatible with Spark 4.0.1)
+RUN wget -O /opt/spark/jars/delta-spark_2.13-4.0.0.jar \
+    https://repo1.maven.org/maven2/io/delta/delta-spark_2.13/4.0.0/delta-spark_2.13-4.0.0.jar \
+    && wget -O /opt/spark/jars/delta-storage-4.0.0.jar \
+    https://repo1.maven.org/maven2/io/delta/delta-storage/4.0.0/delta-storage-4.0.0.jar
+
+# 3. AWS SDK v1 + hadoop-aws (Garage works much better with v1 than v2)
+RUN wget -O /opt/spark/jars/aws-java-sdk-bundle-1.12.261.jar \
+    https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.261/aws-java-sdk-bundle-1.12.261.jar \
+    && wget -O /opt/spark/jars/hadoop-aws-3.3.6.jar \
+    https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.6/hadoop-aws-3.3.6.jar
+
+# 4. Kafka connectors (exact versions that exist)
+RUN wget -O /opt/spark/jars/spark-sql-kafka-0-10_2.13-4.0.1.jar \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.13/4.0.1/spark-sql-kafka-0-10_2.13-4.0.1.jar \
+    && wget -O /opt/spark/jars/kafka-clients-3.7.0.jar \
+    https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.7.0/kafka-clients-3.7.0.jar \
+    && wget -O /opt/spark/jars/spark-token-provider-kafka-0-10_2.13-4.0.1.jar \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.13/4.0.1/spark-token-provider-kafka-0-10_2.13-4.0.1.jar \
+    && wget -O /opt/spark/jars/commons-pool2-2.12.0.jar \
+    https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.12.0/commons-pool2-2.12.0.jar
+
+# 5. Jackson & Parquet bundles (needed for Delta + JSON handling)
+RUN wget -O /opt/spark/jars/jackson-core-2.15.2.jar \
+    https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-core/2.15.2/jackson-core-2.15.2.jar \
+    && wget -O /opt/spark/jars/jackson-databind-2.15.2.jar \
+    https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.15.2/jackson-databind-2.15.2.jar \
+    && wget -O /opt/spark/jars/jackson-annotations-2.15.2.jar \
+    https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.15.2/jackson-annotations-2.15.2.jar \
+    && wget -O /opt/spark/jars/parquet-hadoop-bundle-1.13.1.jar \
+    https://repo1.maven.org/maven2/org/apache/parquet/parquet-hadoop-bundle/1.13.1/parquet-hadoop-bundle-1.13.1.jar
+
+# 6. Python packages
+RUN pip install --no-cache-dir redis kafka-python delta-spark==4.0.0
+
+# 7. Writable temp directories
+RUN mkdir -p /tmp/ivy2 /tmp/spark-local /tmp/checkpoints && \
+    chmod -R 777 /tmp/ivy2 /tmp/spark-local /tmp/checkpoints
+
+WORKDIR /app
+COPY streaming/user_feature_stream/job.py /app/job.py
+
+USER 185
+
+ENV IVY_HOME=/tmp/ivy2
+ENV SPARK_LOCAL_DIRS=/tmp/spark-local
