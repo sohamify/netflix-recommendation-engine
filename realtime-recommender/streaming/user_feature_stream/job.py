@@ -44,6 +44,7 @@ raw_stream = spark.readStream \
     .option("subscribe", "engagement_events") \
     .option("startingOffsets", "earliest") \
     .option("maxOffsetsPerTrigger", 500) \
+    .option("failOnDataLoss", "false") \
     .load()
 
 events = raw_stream \

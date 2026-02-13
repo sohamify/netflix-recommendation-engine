@@ -222,88 +222,86 @@ services:
     networks:
       - app-network
 
-  etcd:
-      image: quay.io/coreos/etcd:v3.5.5
-      container_name: milvus-etcd
-      environment:
-        ETCD_AUTO_COMPACTION_MODE: revision
-        ETCD_AUTO_COMPACTION_RETENTION: "1000"
-        ETCD_QUOTA_BACKEND_BYTES: 4294967296
-        ETCD_MAX_REQUEST_BYTES: 536870912
-        ETCD_SNAPSHOT_COUNT: 50000
-      ports:
-        - "2379:2379"
-      volumes:
-        - etcd_data:/etcd
-      command: etcd --advertise-client-urls=http://0.0.0.0:2379 --listen-client-urls=http://0.0.0.0:2379 --data-dir=/etcd
-      networks:
-        - app-network
-      healthcheck:
-        test: ["CMD", "etcdctl", "endpoint", "health"]
-        interval: 10s
-        timeout: 5s
-        retries: 10
-        start_period: 10s
+  #  etcd:
+  #     image: quay.io/coreos/etcd:v3.5.5
+  #     container_name: milvus-etcd
+  #     environment:
+  #       ETCD_AUTO_COMPACTION_MODE: revision
+  #       ETCD_AUTO_COMPACTION_RETENTION: "1000"
+  #       ETCD_QUOTA_BACKEND_BYTES: 4294967296
+  #       ETCD_MAX_REQUEST_BYTES: 536870912
+  #       ETCD_SNAPSHOT_COUNT: 50000
+  #     ports:
+  #       - "2379:2379"
+  #     volumes:
+  #       - etcd_data:/etcd
+  #     command: etcd --advertise-client-urls=http://0.0.0.0:2379 --listen-client-urls=http://0.0.0.0:2379 --data-dir=/etcd
+  #     networks:
+  #       - app-network
+  #     healthcheck:
+  #       test: ["CMD", "etcdctl", "endpoint", "health"]
+  #       interval: 10s
+  #       timeout: 5s
+  #       retries: 10
+  #       start_period: 10s
+
   milvus:
-      image: milvusdb/milvus:v2.4.10
-      container_name: milvus-standalone
-      command: ["milvus", "run", "standalone"]
-      environment:
-        ETCD_ENDPOINTS: etcd:2379
-        MINIO_ADDRESS: garage
-        MINIO_PORT: 3900
-        MINIO_ACCESS_KEY_ID: GK48bac80794ed37b1a39e86b7
-        MINIO_SECRET_ACCESS_KEY: d692bda02d3183010c58070afccd415325f3608c2ec3c087fde645767984d698
-        MINIO_BUCKET_NAME: milvus-bucket
-        MINIO_USE_SSL: "false"
-        MINIO_CLOUD_PROVIDER: aws
-        MINIO_ROOT_PATH: files
-      ports:
-        - "19530:19530"
-        - "9091:9091"
-      volumes:
-        - milvus_data:/var/lib/milvus
-      depends_on:
-        etcd:
-          condition: service_healthy
-        garage:
-          condition: service_started
-      healthcheck:
-        test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-        interval: 30s
-        timeout: 20s
-        retries: 5
-      networks:
-        - app-network
+    image: milvusdb/milvus:v2.4.10
+    container_name: milvus-standalone
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: ""  # Embedded etcd - no external etcd needed
+      MINIO_ADDRESS: garage
+      MINIO_PORT: 3900
+      MINIO_ACCESS_KEY_ID: GK48bac80794ed37b1a39e86b7  # Your Garage access key
+      MINIO_SECRET_ACCESS_KEY: d692bda02d3183010c58070afccd415325f3608c2ec3c087fde645767984d698  # Your Garage secret key
+      MINIO_BUCKET_NAME: milvus-bucket
+      MINIO_USE_SSL: "false"
+      MINIO_CLOUD_PROVIDER: aws
+      MINIO_ROOT_PATH: files
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    depends_on:
+      garage:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 60s  # Extra time for embedded etcd bootstrap
+    restart: unless-stopped
+    networks:
+      - app-network
 
   embedding-init:
-      image: python:3.11-slim
-      container_name: embedding-init
-      depends_on:
-        postgres:
-          condition: service_healthy
-        milvus:
-          condition: service_healthy
-        etcd:
-          condition: service_healthy
-      volumes:
-        - .:/app
-      working_dir: /app
-      environment:
-        POSTGRES_URI: postgresql://postgres:postgres@postgres:5432/recommender
-        MILVUS_URI: http://milvus:19530
-      command: >
-        sh -c "
-          pip install --no-cache-dir sentence-transformers pymilvus sqlalchemy pandas torch scikit-learn &&
-          python scripts/generate_item_embeddings.py
-        "
-      networks:
-        - app-network
+    image: python:3.11-slim
+    container_name: embedding-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    working_dir: /app
+    environment:
+      POSTGRES_URI: postgresql://postgres:postgres@postgres:5432/recommender
+      MILVUS_URI: http://milvus:19530
+    command: >
+      sh -c "
+        pip install --no-cache-dir sentence-transformers pymilvus sqlalchemy pandas torch scikit-learn &&
+        python scripts/generate_item_embeddings.py
+      "
+    networks:
+      - app-network
 
 
 volumes:
   postgres_data:
-  etcd_data:
   milvus_data:
 
 networks:

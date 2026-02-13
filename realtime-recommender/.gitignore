@@ -9,3 +9,5 @@ data/processed/*
 !data/processed/.gitkeep
 logs/
 tmp/
+data/garage/*
+!data/garage/.gitkeep
